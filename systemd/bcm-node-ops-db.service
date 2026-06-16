@@ -1,0 +1,29 @@
+[Unit]
+Description=BCM Node Ops — PostgreSQL (containerd)
+After=containerd.service
+Requires=containerd.service
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/bcm-node-ops/.env
+
+ExecStartPre=-/usr/bin/ctr task kill bcm-node-ops-db
+ExecStartPre=-/usr/bin/ctr container rm bcm-node-ops-db
+
+ExecStart=/usr/bin/ctr run \
+    --net-host \
+    --env POSTGRES_DB=kestra \
+    --env POSTGRES_USER=kestra \
+    --env POSTGRES_PASSWORD=kestra \
+    --mount type=bind,src=/var/lib/bcm-node-ops/postgres-data,dst=/var/lib/postgresql/data,options=rbind:rw \
+    docker.io/library/postgres:16-alpine \
+    bcm-node-ops-db
+
+ExecStop=/usr/bin/ctr task kill bcm-node-ops-db
+
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
