@@ -121,7 +121,69 @@ This installs:
 - Installs one systemd unit
 - Enables the service
 
-### Step 4 — Test Manually (No SQS Needed)
+### Step 4 — Verify SQS/SNS Connectivity (Prereq for Agent Mode)
+
+Before starting the agent, confirm the BCM head node can reach AWS SQS and SNS.
+
+**4a. Configure AWS CLI credentials:**
+
+```bash
+aws configure
+# AWS Access Key ID:     <your-key>
+# AWS Secret Access Key: <your-secret>
+# Default region:        us-east-1        (must match agent.conf)
+# Default output format: json
+
+# Verify identity
+aws sts get-caller-identity
+```
+
+**4b. Test SQS — Can you read from the queue?**
+
+```bash
+# Replace with your real queue URL from agent.conf
+SQS_URL="https://sqs.us-east-1.amazonaws.com/123456789012/bcm-node-ops-requests"
+
+# Receive (will return empty if no messages — that's OK)
+aws sqs receive-message --queue-url "$SQS_URL" --max-number-of-messages 1 --wait-time-seconds 5
+# ✓ Success: returns {} or {"Messages":[...]}
+# ✗ Failure: "Could not connect" or "Access Denied"
+
+# Send a test message to yourself
+aws sqs send-message --queue-url "$SQS_URL" \
+  --message-body '{"request_id":"connectivity-test","node":"dgx-b200-017","action":"status","reason":"testing SQS"}'
+# ✓ Success: returns {"MD5OfMessageBody":"...","MessageId":"..."}
+
+# Read it back
+aws sqs receive-message --queue-url "$SQS_URL" --max-number-of-messages 1
+# ✓ You should see the message you just sent
+```
+
+**4c. Test SNS — Can you publish results?**
+
+```bash
+# Replace with your real topic ARN from agent.conf
+SNS_ARN="arn:aws:sns:us-east-1:123456789012:bcm-node-ops-results"
+
+aws sns publish --topic-arn "$SNS_ARN" \
+  --subject "connectivity-test" \
+  --message '{"test":"BCM head node can reach SNS"}'
+# ✓ Success: returns {"MessageId":"..."}
+# ✗ Failure: "Could not connect" or "AuthorizationError"
+```
+
+**4d. Test Redfish BMC — Can you reach the node BMC?**
+
+```bash
+# Replace with a real BMC IP from nodes.yaml
+curl -sk -u admin:your-password https://10.10.20.17/redfish/v1/Systems/1 | jq '.PowerState, .Status.Health'
+# ✓ Success: "On", "OK"
+# ✗ Failure: timeout or connection refused
+```
+
+> **If SQS/SNS is not reachable yet**, skip to Step 5 and test with manual mode. The agent's SQS polling will fail gracefully and retry — you can start the service once connectivity is established.
+
+### Step 5 — Test Manually (No SQS Needed)
 
 ```bash
 # Check node status via cmsh
@@ -143,7 +205,7 @@ This installs:
 /opt/bcm-node-ops/scripts/agent.sh manual dgx-b200-017 power_cycle
 ```
 
-### Step 5 — Start the Agent (SQS Polling)
+### Step 6 — Start the Agent (SQS Polling)
 
 ```bash
 sudo systemctl start bcm-node-ops-agent
@@ -160,7 +222,7 @@ BCM Node Ops Agent starting
   Poll:       every 10s (long-poll 20s)
 ```
 
-### Step 6 — Verify
+### Step 7 — Verify
 
 ```bash
 # Service status
