@@ -1,8 +1,20 @@
 # BCM Node Operations Agent
 
-SQS-driven agent that polls for node operation requests, executes them via Redfish/cmsh, and publishes results to SNS. Runs on the **BCM head node** as a single systemd service. No containers.
+SQS-driven agent that polls for node operation requests, executes them via **vendor-aware Redfish**, and publishes results to SNS. Runs on the **BCM head node** as a single systemd service. No containers.
+
+**Jira:** ALTUS-20280 (API Power Operation — Reboot/Off/On) | **Parent:** ALTUS-18358
 
 ![Architecture](docs/images/architecture.png)
+
+### Supported BMC Vendors
+
+| Vendor | BMC Product | System ID | Redfish Path |
+|--------|-------------|-----------|-------------|
+| **NVIDIA DGX** | AMI Redfish Server | `DGX` | `/redfish/v1/Systems/DGX/Actions/ComputerSystem.Reset` |
+| **Dell iDRAC** | iDRAC 8/9/10 | `System.Embedded.1` | `/redfish/v1/Systems/System.Embedded.1/Actions/ComputerSystem.Reset` |
+| **HPE iLO** | iLO 4/5/6 | `1` | `/redfish/v1/Systems/1/Actions/ComputerSystem.Reset` |
+
+> 📖 Full curl reference for all three vendors: [docs/redfish-reference.md](docs/redfish-reference.md)
 
 ---
 
@@ -93,20 +105,24 @@ REDFISH_USER=admin
 REDFISH_PASSWORD=your-real-password
 ```
 
-**`config/nodes.yaml`** — Add your nodes with real BMC IPs:
+**`config/nodes.yaml`** — Add your nodes with real BMC IPs and vendor:
 
 ```yaml
 nodes:
   dgx-b200-017:
     type: gpu
-    bmc_host: https://10.10.20.17       # ← your BMC IP
+    vendor: dgx                          # ← DGX → /Systems/DGX/
+    bmc_host: https://10.10.20.17        # ← your BMC IP
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-004:
     type: cpu
-    bmc_host: https://10.10.30.4        # ← your BMC IP
+    vendor: idrac                        # ← Dell → /Systems/System.Embedded.1/
+    bmc_host: https://10.10.30.4         # ← your BMC IP
     allowed: [status, reboot, power_on, power_off, power_cycle]
 ```
+
+**Vendor values:** `dgx` | `idrac` | `ilo`
 
 ### Step 3 — Install
 
@@ -176,9 +192,17 @@ aws sns publish --topic-arn "$SNS_ARN" \
 
 ```bash
 # Replace with a real BMC IP from nodes.yaml
-curl -sk -u admin:your-password https://10.10.20.17/redfish/v1/Systems/1 | jq '.PowerState, .Status.Health'
+# Use the correct System ID for your vendor:
+#   DGX:   /Systems/DGX
+#   iDRAC: /Systems/System.Embedded.1
+#   iLO:   /Systems/1
+curl -sk -u admin:your-password https://10.10.20.17/redfish/v1/Systems/DGX | jq '.PowerState, .Status.Health'
 # ✓ Success: "On", "OK"
 # ✗ Failure: timeout or connection refused
+
+# Don't know the System ID? Discover it:
+curl -sk -u admin:your-password https://10.10.20.17/redfish/v1/Systems \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); [print(m['@odata.id']) for m in d['Members']]"
 ```
 
 > **If SQS/SNS is not reachable yet**, skip to Step 5 and test with manual mode. The agent's SQS polling will fail gracefully and retry — you can start the service once connectivity is established.
@@ -281,18 +305,21 @@ The agent publishes this to the SNS results topic after execution:
 Edit `/opt/bcm-node-ops/scripts/operations.sh`. Each operation is a bash function:
 
 ```bash
-# Example: Change reboot to use a different Redfish endpoint
+# All functions receive system_id as $5 (resolved from vendor in nodes.yaml)
 do_reboot() {
-    local node="$1" bmc="$2" mode="${3:-graceful}" reason="$4"
+    local node="$1" bmc="$2" mode="${3:-graceful}" reason="$4" system_id="${5:-1}"
     local reset_type="GracefulRestart"
     [[ "$mode" == "force" ]] && reset_type="ForceRestart"
 
-    # ← Change this curl command to match your BMC
+    # system_id is auto-resolved from vendor field:
+    #   dgx   → DGX
+    #   idrac → System.Embedded.1
+    #   ilo   → 1
     http_code=$(curl -sk -u "${REDFISH_USER}:${REDFISH_PASSWORD}" \
         -o /dev/null -w "%{http_code}" \
         -X POST -H "Content-Type: application/json" \
         -d "{\"ResetType\":\"${reset_type}\"}" \
-        "${bmc}/redfish/v1/Systems/1/Actions/ComputerSystem.Reset")
+        "${bmc}/redfish/v1/Systems/${system_id}/Actions/ComputerSystem.Reset")
 
     [[ "$http_code" =~ ^(200|204)$ ]] && echo "OK" || { echo "FAIL (HTTP $http_code)"; return 1; }
 }
@@ -328,7 +355,7 @@ bash tests/test-agent.sh
 | SQS poll errors | Check `aws configure` — need valid IAM credentials |
 | `Node not in inventory` | Add to `/opt/bcm-node-ops/config/nodes.yaml` |
 | `Action not allowed` | Check `allowed:` list for the node in `nodes.yaml` |
-| Redfish timeout | `curl -k https://<bmc-ip>/redfish/v1/Systems/1` |
+| Redfish timeout | `curl -k https://<bmc-ip>/redfish/v1/Systems` (discover System ID first) |
 | Agent won't start | `sudo journalctl -u bcm-node-ops-agent -n 50` |
 
 ---

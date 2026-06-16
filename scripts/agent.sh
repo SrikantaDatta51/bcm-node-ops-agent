@@ -59,6 +59,28 @@ is_allowed() {
     grep -A5 "^  ${node}:" "$NODE_INVENTORY" | grep -q "allowed:.*${action}"
 }
 
+lookup_vendor() {
+    local node="$1" in_node=false
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]{2}${node}: ]]; then in_node=true; continue; fi
+        if $in_node; then
+            if [[ "$line" =~ vendor:[[:space:]]*(.+) ]]; then
+                local v="${BASH_REMATCH[1]}"
+                v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+                v="$(echo "$v" | xargs)"  # trim whitespace
+                echo "$v"; return 0
+            fi
+            [[ "$line" =~ ^[[:space:]]{2}[a-zA-Z] ]] && ! [[ "$line" =~ ^[[:space:]]{4} ]] && break
+        fi
+    done < "$NODE_INVENTORY"
+    # Auto-detect from node name if vendor not in YAML
+    case "$node" in
+        dgx*|*dgx*) echo "dgx" ;;
+        *r660*|*r750*|*r760*) echo "idrac" ;;
+        *) echo "ilo" ;;
+    esac
+}
+
 validate_node() {
     [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || { log "[REJECT] Bad node name: $1"; return 1; }
 }
@@ -75,16 +97,21 @@ execute_action() {
 
     is_allowed "$node" "$action" || { audit "$node" "$action" "REJECTED" "action not allowed" "$request_id" "$reason"; return 1; }
 
-    log "[EXEC] node=$node action=$action mode=$mode reason=$reason request_id=$request_id"
+    # Resolve vendor → Redfish System ID
+    local vendor system_id
+    vendor=$(lookup_vendor "$node")
+    system_id=$(resolve_system_id "$vendor")
 
-    # Dispatch to operation function
+    log "[EXEC] node=$node action=$action mode=$mode vendor=$vendor system_id=$system_id request_id=$request_id"
+
+    # Dispatch to operation function (all functions now receive system_id as $5)
     local result="" status="SUCCESS" exit_code=0
     case "$action" in
-        reboot)      result=$(do_reboot "$node" "$bmc" "$mode" "$reason")      || exit_code=$? ;;
-        power_on)    result=$(do_power_on "$node" "$bmc" "$mode" "$reason")    || exit_code=$? ;;
-        power_off)   result=$(do_power_off "$node" "$bmc" "$mode" "$reason")   || exit_code=$? ;;
-        power_cycle) result=$(do_power_cycle "$node" "$bmc" "$mode" "$reason") || exit_code=$? ;;
-        status)      result=$(do_status "$node" "$bmc" "$mode" "$reason")      || exit_code=$? ;;
+        reboot)      result=$(do_reboot "$node" "$bmc" "$mode" "$reason" "$system_id")      || exit_code=$? ;;
+        power_on)    result=$(do_power_on "$node" "$bmc" "$mode" "$reason" "$system_id")    || exit_code=$? ;;
+        power_off)   result=$(do_power_off "$node" "$bmc" "$mode" "$reason" "$system_id")   || exit_code=$? ;;
+        power_cycle) result=$(do_power_cycle "$node" "$bmc" "$mode" "$reason" "$system_id") || exit_code=$? ;;
+        status)      result=$(do_status "$node" "$bmc" "$mode" "$reason" "$system_id")      || exit_code=$? ;;
         *) result="unknown action: $action"; exit_code=1 ;;
     esac
 

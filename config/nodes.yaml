@@ -2,34 +2,45 @@
 #
 # Edit with your actual nodes.
 # The agent only operates on nodes listed here.
-# ┌─────────────────────────────────────────────────────────┐
-# │  bmc_host: Redfish endpoint of the node's BMC           │
-# │  type:     gpu | cpu                                     │
-# │  allowed:  list of actions this node accepts             │
-# └─────────────────────────────────────────────────────────┘
+# ┌─────────────────────────────────────────────────────────────┐
+# │  bmc_host: Redfish endpoint of the node's BMC               │
+# │  type:     gpu | cpu                                         │
+# │  vendor:   dgx | idrac | ilo  (determines Redfish System ID)│
+# │  allowed:  list of actions this node accepts                 │
+# └─────────────────────────────────────────────────────────────┘
+#
+# Vendor → Redfish System ID mapping:
+#   dgx   → /redfish/v1/Systems/DGX/           (NVIDIA DGX, AMI BMC)
+#   idrac → /redfish/v1/Systems/System.Embedded.1/  (Dell iDRAC 8/9/10)
+#   ilo   → /redfish/v1/Systems/1/             (HPE iLO 4/5/6)
 
 nodes:
   dgx-b200-017:
     type: gpu
+    vendor: dgx
     bmc_host: https://10.10.20.17
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   dgx-b200-018:
     type: gpu
+    vendor: dgx
     bmc_host: https://10.10.20.18
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   dgx-h200-042:
     type: gpu
+    vendor: dgx
     bmc_host: https://10.10.10.42
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-004:
     type: cpu
+    vendor: idrac
     bmc_host: https://10.10.30.4
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-005:
     type: cpu
+    vendor: idrac
     bmc_host: https://10.10.30.5
     allowed: [status, reboot]
