@@ -2,12 +2,19 @@
 #
 # Edit with your actual nodes.
 # The agent only operates on nodes listed here.
-# ┌─────────────────────────────────────────────────────────────┐
-# │  bmc_host: Redfish endpoint of the node's BMC               │
-# │  type:     gpu | cpu                                         │
-# │  vendor:   dgx | idrac | ilo  (determines Redfish System ID)│
-# │  allowed:  list of actions this node accepts                 │
-# └─────────────────────────────────────────────────────────────┘
+# ┌──────────────────────────────────────────────────────────────┐
+# │  bmc_host:     Redfish endpoint of the node's BMC            │
+# │  type:         gpu | cpu                                      │
+# │  vendor:       dgx | idrac | ilo  (Redfish System ID)        │
+# │  allowed:      list of actions this node accepts              │
+# │  bmc_user:     (optional) per-node credential override        │
+# │  bmc_password: (optional) per-node credential override        │
+# └──────────────────────────────────────────────────────────────┘
+#
+# Credential resolution priority:
+#   1. Per-node:   bmc_user / bmc_password in this file
+#   2. Per-vendor: REDFISH_USER_DGX / REDFISH_PASSWORD_DGX in agent.conf
+#   3. Global:     REDFISH_USER / REDFISH_PASSWORD in agent.conf
 #
 # Vendor → Redfish System ID mapping:
 #   dgx   → /redfish/v1/Systems/DGX/           (NVIDIA DGX, AMI BMC)
@@ -31,6 +38,8 @@ nodes:
     type: gpu
     vendor: dgx
     bmc_host: https://10.10.10.42
+    bmc_user: dgx-special-user
+    bmc_password: 'dgx-special-pass'
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-004:
@@ -43,4 +52,6 @@ nodes:
     type: cpu
     vendor: idrac
     bmc_host: https://10.10.30.5
+    bmc_user: idrac-custom
+    bmc_password: 'idrac-custom-pass$3!'
     allowed: [status, reboot]

@@ -100,9 +100,19 @@ SQS_QUEUE_URL="https://sqs.us-east-1.amazonaws.com/123456789012/bcm-node-ops-req
 SNS_TOPIC_ARN="arn:aws:sns:us-east-1:123456789012:bcm-node-ops-results"
 AWS_REGION="us-east-1"
 
-# Your BMC credentials
+# Per-vendor BMC credentials (GPU and CPU nodes have different logins)
+REDFISH_USER_DGX=coupangdgx
+REDFISH_PASSWORD_DGX='your-dgx-password'
+
+REDFISH_USER_IDRAC=root
+REDFISH_PASSWORD_IDRAC='your-idrac-password$3!'   # single quotes for $ or !
+
+REDFISH_USER_ILO=pang
+REDFISH_PASSWORD_ILO='your-ilo-password'
+
+# Global fallback (used if vendor-specific vars are not set)
 REDFISH_USER=admin
-REDFISH_PASSWORD=your-real-password
+REDFISH_PASSWORD=changeme
 ```
 
 **`config/nodes.yaml`** — Add your nodes with real BMC IPs and vendor:
@@ -112,17 +122,28 @@ nodes:
   dgx-b200-017:
     type: gpu
     vendor: dgx                          # ← DGX → /Systems/DGX/
-    bmc_host: https://10.10.20.17        # ← your BMC IP
+    bmc_host: https://10.10.20.17        # ← uses REDFISH_USER_DGX creds
+    allowed: [status, reboot, power_on, power_off, power_cycle]
+
+  dgx-h200-042:
+    type: gpu
+    vendor: dgx
+    bmc_host: https://10.10.10.42
+    bmc_user: special-user               # ← per-node override (highest priority)
+    bmc_password: 'special-pass'
     allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-004:
     type: cpu
     vendor: idrac                        # ← Dell → /Systems/System.Embedded.1/
-    bmc_host: https://10.10.30.4         # ← your BMC IP
+    bmc_host: https://10.10.30.4         # ← uses REDFISH_USER_IDRAC creds
     allowed: [status, reboot, power_on, power_off, power_cycle]
 ```
 
-**Vendor values:** `dgx` | `idrac` | `ilo`
+**Credential resolution priority:**
+1. **Per-node** — `bmc_user` / `bmc_password` in nodes.yaml (highest)
+2. **Per-vendor** — `REDFISH_USER_DGX` / `REDFISH_PASSWORD_DGX` in agent.conf
+3. **Global** — `REDFISH_USER` / `REDFISH_PASSWORD` in agent.conf (fallback)
 
 ### Step 3 — Install
 

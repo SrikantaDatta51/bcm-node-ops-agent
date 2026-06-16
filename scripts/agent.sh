@@ -81,6 +81,34 @@ lookup_vendor() {
     esac
 }
 
+# Lookup per-node credential overrides from nodes.yaml
+# Returns "user:password" if found, empty string if not.
+lookup_node_creds() {
+    local node="$1" in_node=false node_user="" node_pass=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]{2}${node}: ]]; then in_node=true; continue; fi
+        if $in_node; then
+            if [[ "$line" =~ bmc_user:[[:space:]]*(.+) ]]; then
+                node_user="${BASH_REMATCH[1]}"
+                node_user="${node_user%\"}"; node_user="${node_user#\"}"
+                node_user="${node_user%\'}"; node_user="${node_user#\'}"
+                node_user="$(echo "$node_user" | xargs)"
+            fi
+            if [[ "$line" =~ bmc_password:[[:space:]]*(.+) ]]; then
+                node_pass="${BASH_REMATCH[1]}"
+                node_pass="${node_pass%\"}"; node_pass="${node_pass#\"}"
+                node_pass="${node_pass%\'}"; node_pass="${node_pass#\'}"
+                node_pass="$(echo "$node_pass" | xargs)"
+            fi
+            [[ "$line" =~ ^[[:space:]]{2}[a-zA-Z] ]] && ! [[ "$line" =~ ^[[:space:]]{4} ]] && break
+        fi
+    done < "$NODE_INVENTORY"
+    # Only return if both user and password are set
+    if [[ -n "$node_user" && -n "$node_pass" ]]; then
+        echo "${node_user}:${node_pass}"
+    fi
+}
+
 validate_node() {
     [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || { log "[REJECT] Bad node name: $1"; return 1; }
 }
@@ -102,16 +130,27 @@ execute_action() {
     vendor=$(lookup_vendor "$node")
     system_id=$(resolve_system_id "$vendor")
 
-    log "[EXEC] node=$node action=$action mode=$mode vendor=$vendor system_id=$system_id request_id=$request_id"
+    # Resolve per-node credential overrides (if set in nodes.yaml)
+    local node_creds
+    node_creds=$(lookup_node_creds "$node")
+    # Export as env vars so resolve_creds() in operations.sh can pick them up
+    if [[ -n "$node_creds" ]]; then
+        export _NODE_CRED_USER="${node_creds%%:*}"
+        export _NODE_CRED_PASS="${node_creds#*:}"
+        log "[EXEC] node=$node action=$action mode=$mode vendor=$vendor system_id=$system_id user=${_NODE_CRED_USER} (node-level) request_id=$request_id"
+    else
+        unset _NODE_CRED_USER _NODE_CRED_PASS 2>/dev/null || true
+        log "[EXEC] node=$node action=$action mode=$mode vendor=$vendor system_id=$system_id user=<vendor-default> request_id=$request_id"
+    fi
 
-    # Dispatch to operation function (all functions now receive system_id as $5)
+    # Dispatch to operation function ($5=system_id, $6=vendor)
     local result="" status="SUCCESS" exit_code=0
     case "$action" in
-        reboot)      result=$(do_reboot "$node" "$bmc" "$mode" "$reason" "$system_id")      || exit_code=$? ;;
-        power_on)    result=$(do_power_on "$node" "$bmc" "$mode" "$reason" "$system_id")    || exit_code=$? ;;
-        power_off)   result=$(do_power_off "$node" "$bmc" "$mode" "$reason" "$system_id")   || exit_code=$? ;;
-        power_cycle) result=$(do_power_cycle "$node" "$bmc" "$mode" "$reason" "$system_id") || exit_code=$? ;;
-        status)      result=$(do_status "$node" "$bmc" "$mode" "$reason" "$system_id")      || exit_code=$? ;;
+        reboot)      result=$(do_reboot "$node" "$bmc" "$mode" "$reason" "$system_id" "$vendor")      || exit_code=$? ;;
+        power_on)    result=$(do_power_on "$node" "$bmc" "$mode" "$reason" "$system_id" "$vendor")    || exit_code=$? ;;
+        power_off)   result=$(do_power_off "$node" "$bmc" "$mode" "$reason" "$system_id" "$vendor")   || exit_code=$? ;;
+        power_cycle) result=$(do_power_cycle "$node" "$bmc" "$mode" "$reason" "$system_id" "$vendor") || exit_code=$? ;;
+        status)      result=$(do_status "$node" "$bmc" "$mode" "$reason" "$system_id" "$vendor")      || exit_code=$? ;;
         *) result="unknown action: $action"; exit_code=1 ;;
     esac
 

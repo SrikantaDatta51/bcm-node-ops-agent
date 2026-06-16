@@ -22,43 +22,88 @@
 #   - Exit 0 on success, non-zero on failure
 #   - Print a one-line result message to stdout
 #
-# Environment available:
-#   REDFISH_USER, REDFISH_PASSWORD, REDFISH_TLS_VERIFY, REDFISH_TIMEOUT
-
-CURL_BASE=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${REDFISH_USER}:${REDFISH_PASSWORD}")
-[[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && CURL_BASE+=(-k)
+# Environment available (set in agent.conf):
+#   Per-vendor: REDFISH_USER_DGX, REDFISH_PASSWORD_DGX, etc.
+#   Fallback:   REDFISH_USER, REDFISH_PASSWORD
+#   Common:     REDFISH_TLS_VERIFY, REDFISH_TIMEOUT
 
 # ── Vendor → System ID mapping ─────────────────────────────────
-# Called by agent.sh to resolve the correct Redfish System ID
 resolve_system_id() {
     local vendor="${1:-ilo}"
     case "$vendor" in
         dgx)   echo "DGX" ;;
         idrac) echo "System.Embedded.1" ;;
         ilo)   echo "1" ;;
-        *)     echo "1" ;;  # safe default
+        *)     echo "1" ;;
     esac
+}
+
+# ── Credential resolution ───────────────────────────────────────
+# Priority: per-node (nodes.yaml) → per-vendor (agent.conf) → global fallback
+# Per-node creds are exported by agent.sh as _NODE_CRED_USER / _NODE_CRED_PASS
+resolve_creds() {
+    local vendor="${1:-}"
+
+    # 1. Per-node override (bmc_user / bmc_password in nodes.yaml)
+    if [[ -n "${_NODE_CRED_USER:-}" && -n "${_NODE_CRED_PASS:-}" ]]; then
+        _RF_USER="$_NODE_CRED_USER"
+        _RF_PASS="$_NODE_CRED_PASS"
+        return
+    fi
+
+    # 2. Per-vendor (REDFISH_USER_DGX, etc. in agent.conf)
+    # 3. Global fallback (REDFISH_USER / REDFISH_PASSWORD)
+    case "$vendor" in
+        dgx)
+            _RF_USER="${REDFISH_USER_DGX:-${REDFISH_USER:-admin}}"
+            _RF_PASS="${REDFISH_PASSWORD_DGX:-${REDFISH_PASSWORD:-changeme}}"
+            ;;
+        idrac)
+            _RF_USER="${REDFISH_USER_IDRAC:-${REDFISH_USER:-admin}}"
+            _RF_PASS="${REDFISH_PASSWORD_IDRAC:-${REDFISH_PASSWORD:-changeme}}"
+            ;;
+        ilo)
+            _RF_USER="${REDFISH_USER_ILO:-${REDFISH_USER:-admin}}"
+            _RF_PASS="${REDFISH_PASSWORD_ILO:-${REDFISH_PASSWORD:-changeme}}"
+            ;;
+        *)
+            _RF_USER="${REDFISH_USER:-admin}"
+            _RF_PASS="${REDFISH_PASSWORD:-changeme}"
+            ;;
+    esac
+}
+
+# ── Build curl command with resolved credentials ───────────────
+# Call resolve_creds() first, then use build_curl() for the command.
+build_curl() {
+    local cmd=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${_RF_USER}:${_RF_PASS}")
+    [[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && cmd+=(-k)
+    echo "${cmd[@]}"
 }
 
 # ────────────────────────────────────────────────────────────────
 # REBOOT
 # ────────────────────────────────────────────────────────────────
 do_reboot() {
-    local node="$1" bmc="$2" mode="${3:-graceful}" reason="$4" system_id="${5:-1}"
+    local node="$1" bmc="$2" mode="${3:-graceful}" reason="$4" system_id="${5:-1}" vendor="${6:-}"
     local reset_type="GracefulRestart"
     [[ "$mode" == "force" ]] && reset_type="ForceRestart"
 
+    resolve_creds "$vendor"
+    local CURL_CMD=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${_RF_USER}:${_RF_PASS}")
+    [[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && CURL_CMD+=(-k)
+
     local http_code
-    http_code=$("${CURL_BASE[@]}" -o /dev/null -w "%{http_code}" \
+    http_code=$("${CURL_CMD[@]}" -o /dev/null -w "%{http_code}" \
         -X POST -H "Content-Type: application/json" \
         -d "{\"ResetType\":\"${reset_type}\"}" \
         "${bmc}/redfish/v1/Systems/${system_id}/Actions/ComputerSystem.Reset")
 
     if [[ "$http_code" =~ ^(200|204)$ ]]; then
-        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 0
     else
-        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 1
     fi
 }
@@ -67,20 +112,24 @@ do_reboot() {
 # POWER ON
 # ────────────────────────────────────────────────────────────────
 do_power_on() {
-    local node="$1" bmc="$2" mode="$3" reason="$4" system_id="${5:-1}"
+    local node="$1" bmc="$2" mode="$3" reason="$4" system_id="${5:-1}" vendor="${6:-}"
     local reset_type="On"
 
+    resolve_creds "$vendor"
+    local CURL_CMD=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${_RF_USER}:${_RF_PASS}")
+    [[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && CURL_CMD+=(-k)
+
     local http_code
-    http_code=$("${CURL_BASE[@]}" -o /dev/null -w "%{http_code}" \
+    http_code=$("${CURL_CMD[@]}" -o /dev/null -w "%{http_code}" \
         -X POST -H "Content-Type: application/json" \
         -d "{\"ResetType\":\"${reset_type}\"}" \
         "${bmc}/redfish/v1/Systems/${system_id}/Actions/ComputerSystem.Reset")
 
     if [[ "$http_code" =~ ^(200|204)$ ]]; then
-        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 0
     else
-        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 1
     fi
 }
@@ -89,21 +138,25 @@ do_power_on() {
 # POWER OFF
 # ────────────────────────────────────────────────────────────────
 do_power_off() {
-    local node="$1" bmc="$2" mode="${3:-graceful}" reason="$4" system_id="${5:-1}"
+    local node="$1" bmc="$2" mode="${3:-graceful}" reason="$4" system_id="${5:-1}" vendor="${6:-}"
     local reset_type="GracefulShutdown"
     [[ "$mode" == "force" ]] && reset_type="ForceOff"
 
+    resolve_creds "$vendor"
+    local CURL_CMD=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${_RF_USER}:${_RF_PASS}")
+    [[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && CURL_CMD+=(-k)
+
     local http_code
-    http_code=$("${CURL_BASE[@]}" -o /dev/null -w "%{http_code}" \
+    http_code=$("${CURL_CMD[@]}" -o /dev/null -w "%{http_code}" \
         -X POST -H "Content-Type: application/json" \
         -d "{\"ResetType\":\"${reset_type}\"}" \
         "${bmc}/redfish/v1/Systems/${system_id}/Actions/ComputerSystem.Reset")
 
     if [[ "$http_code" =~ ^(200|204)$ ]]; then
-        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 0
     else
-        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 1
     fi
 }
@@ -112,36 +165,44 @@ do_power_off() {
 # POWER CYCLE
 # ────────────────────────────────────────────────────────────────
 do_power_cycle() {
-    local node="$1" bmc="$2" mode="$3" reason="$4" system_id="${5:-1}"
+    local node="$1" bmc="$2" mode="$3" reason="$4" system_id="${5:-1}" vendor="${6:-}"
     local reset_type="PowerCycle"
 
+    resolve_creds "$vendor"
+    local CURL_CMD=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${_RF_USER}:${_RF_PASS}")
+    [[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && CURL_CMD+=(-k)
+
     local http_code
-    http_code=$("${CURL_BASE[@]}" -o /dev/null -w "%{http_code}" \
+    http_code=$("${CURL_CMD[@]}" -o /dev/null -w "%{http_code}" \
         -X POST -H "Content-Type: application/json" \
         -d "{\"ResetType\":\"${reset_type}\"}" \
         "${bmc}/redfish/v1/Systems/${system_id}/Actions/ComputerSystem.Reset")
 
     if [[ "$http_code" =~ ^(200|204)$ ]]; then
-        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} accepted (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 0
     else
-        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}]"
+        echo "Redfish ${reset_type} failed (HTTP ${http_code}) [system=${system_id}, user=${_RF_USER}]"
         return 1
     fi
 }
 
 # ────────────────────────────────────────────────────────────────
-# STATUS CHECK — via BCM cmsh
+# STATUS CHECK — via Redfish + BCM cmsh
 # ────────────────────────────────────────────────────────────────
 do_status() {
-    local node="$1" bmc="$2" mode="$3" reason="$4" system_id="${5:-1}"
+    local node="$1" bmc="$2" mode="$3" reason="$4" system_id="${5:-1}" vendor="${6:-}"
 
     # First try Redfish power state query (works even when OS is down)
+    local power_state="Unknown"
     if [[ -n "$bmc" ]]; then
-        local power_state
-        power_state=$("${CURL_BASE[@]}" \
+        resolve_creds "$vendor"
+        local CURL_CMD=(curl -s -S --max-time "${REDFISH_TIMEOUT:-30}" -u "${_RF_USER}:${_RF_PASS}")
+        [[ "${REDFISH_TLS_VERIFY:-false}" == "false" ]] && CURL_CMD+=(-k)
+
+        power_state=$("${CURL_CMD[@]}" \
             "${bmc}/redfish/v1/Systems/${system_id}" 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('PowerState','Unknown'))" 2>/dev/null) || true
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('PowerState','Unknown'))" 2>/dev/null) || power_state="Unknown"
     fi
 
     # Then try cmsh for BCM-level status
@@ -150,14 +211,14 @@ do_status() {
         output=$(cmsh -c "device use ${node}; status" 2>&1) || true
 
         if echo "$output" | grep -qi "UP"; then
-            echo "bcm_status=UP,power=${power_state:-On},reachable=true,system_id=${system_id}"
+            echo "bcm_status=UP,power=${power_state},reachable=true,system_id=${system_id},user=${_RF_USER:-n/a}"
         elif echo "$output" | grep -qi "DOWN\|CLOSED"; then
-            echo "bcm_status=DOWN,power=${power_state:-Off},reachable=false,system_id=${system_id}"
+            echo "bcm_status=DOWN,power=${power_state},reachable=false,system_id=${system_id},user=${_RF_USER:-n/a}"
         else
-            echo "bcm_status=UNKNOWN,power=${power_state:-Unknown},raw=${output},system_id=${system_id}"
+            echo "bcm_status=UNKNOWN,power=${power_state},raw=${output},system_id=${system_id}"
         fi
     else
-        echo "bcm_status=UNKNOWN,power=${power_state:-Unknown},cmsh_not_available=true,system_id=${system_id}"
+        echo "bcm_status=UNKNOWN,power=${power_state},cmsh_not_available=true,system_id=${system_id}"
     fi
     return 0
 }
