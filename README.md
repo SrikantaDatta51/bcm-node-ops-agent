@@ -1,10 +1,8 @@
 # BCM Node Operations Agent
 
-SQS-driven agent that polls for node operation requests, executes them via **vendor-aware Redfish**, and publishes results to SNS. Runs on the **BCM head node** as a single systemd service. No containers.
+SQS-driven agent that subscribes to a request queue, executes **vendor-aware Redfish** power operations, and publishes results to a response queue. Runs on the **BCM head node** as a systemd service. No containers. **Dual-mode: Go binary (production) or shell script (quick-edit).**
 
 **Jira:** ALTUS-20280 (API Power Operation — Reboot/Off/On) | **Parent:** ALTUS-18358
-
-![Architecture](docs/images/architecture.png)
 
 ### Supported BMC Vendors
 
@@ -16,29 +14,36 @@ SQS-driven agent that polls for node operation requests, executes them via **ven
 
 > 📖 Full curl reference for all three vendors: [docs/redfish-reference.md](docs/redfish-reference.md)
 
+### Agent Modes
+
+| Mode | Binary | systemd Unit | SQS Model | Use Case |
+|------|--------|-------------|-----------|----------|
+| **Go binary** | `bcm-node-ops-agent` | `bcm-node-ops-agent-go.service` | True long-poll (WaitTimeSeconds=20) | Production |
+| **Shell script** | `scripts/agent.sh` | `bcm-node-ops-agent.service` | SQS polling (configurable interval) | Quick iteration |
+
+Both modes share the same `config/nodes.yaml` inventory and `config/agent.conf`/`agent.env` credentials.
+
 ---
 
 ## How It Works
 
 ```
-SQS Queue  ──poll──▶  agent.sh  ──dispatch──▶  operations.sh  ──▶  Redfish BMC / cmsh
-                         │                                               │
-                         │◀──────────── result ──────────────────────────┘
-                         │
-                    publish result
-                         │
-                         ▼
-                    SNS Topic
+SQS Request Queue ──subscribe──▶  Agent (Go/Shell)  ──dispatch──▶  Redfish BMC
+                                       │                               │
+                                       │◀──────── result ──────────────┘
+                                       │
+                                  publish progress
+                                       │
+                                       ▼
+                                SQS Response Queue ──▶ Fleet API (progress + result)
 ```
 
-1. **agent.sh** (systemd service) long-polls the SQS queue
-2. Receives a message: `{"node":"dgx-b200-017", "action":"reboot", "mode":"graceful"}`
-3. Dispatches to the matching function in **operations.sh**
-4. operations.sh executes the Redfish curl / cmsh command
-5. Polls node status until it reaches expected state
-6. Publishes result JSON to SNS topic
-7. Deletes the SQS message
-8. Logs everything to `/var/log/bcm-node-ops/audit.jsonl`
+1. Agent subscribes to `fleet-node-ops-requests` SQS (Go: true long-poll, Shell: polling loop)
+2. Receives standardized message envelope with payload
+3. Checks TTL — expired requests are discarded with EXPIRED response
+4. Resolves vendor → Redfish System ID, resolves credentials (node → vendor → global)
+5. Publishes progress: `validating` → `redfish_accepted` → `completed`/`failed`
+6. Writes audit entry to `/var/log/bcm-node-ops/audit.jsonl`
 
 ---
 
@@ -58,26 +63,47 @@ Everything else is the agent framework — you don't touch it.
 
 ```
 bcm-node-ops-agent/
+├── cmd/
+│   └── agent/
+│       └── main.go              # Go agent entry point
+├── internal/
+│   ├── config/config.go         # Config loader + credential resolver
+│   ├── redfish/client.go        # Vendor-aware Redfish client
+│   ├── sqs/consumer.go          # SQS long-poll consumer
+│   ├── sqs/publisher.go         # SQS response publisher
+│   └── ops/executor.go          # Power operation executor
+│
 ├── scripts/
-│   ├── agent.sh          # SQS poller → executor → SNS publisher (DON'T EDIT)
-│   ├── operations.sh     # Redfish + cmsh commands (YOU EDIT THIS)
-│   └── install.sh        # One-time installer
+│   ├── agent.sh                 # Shell agent (polling mode)
+│   ├── operations.sh            # Redfish + cmsh commands
+│   └── install.sh               # One-time installer
 │
 ├── config/
-│   ├── agent.conf        # SQS/SNS endpoints + credentials (YOU EDIT THIS)
-│   └── nodes.yaml        # Node inventory — BMC IPs (YOU EDIT THIS)
+│   ├── agent.conf               # Shell agent config
+│   ├── agent.env                # Go agent env vars (systemd)
+│   └── nodes.yaml               # Node inventory + per-node creds
 │
 ├── systemd/
-│   └── bcm-node-ops-agent.service   # ONE systemd unit
+│   ├── bcm-node-ops-agent.service      # Shell agent systemd unit
+│   └── bcm-node-ops-agent-go.service   # Go agent systemd unit
 │
-├── tests/
-│   └── test-agent.sh     # Validation tests
+├── docs/
+│   └── redfish-reference.md     # Vendor curl reference
 │
-└── docs/images/
-    └── architecture.png
+├── go.mod                       # Go module
+├── Makefile                     # Build/install targets
+└── tests/
+    └── test-agent.sh            # Validation tests
 ```
 
-**Total: 7 files.** That's it.
+### What You Edit
+
+| File | What | When |
+|------|------|------|
+| `config/nodes.yaml` | Node inventory — BMC IPs, vendor, per-node creds | **Always** |
+| `config/agent.conf` | Shell agent: SQS URLs, per-vendor creds | Shell mode |
+| `config/agent.env` | Go agent: SQS URLs, per-vendor creds | Go mode |
+| `scripts/operations.sh` | Redfish curl commands | Only if changing shell ops |
 
 ---
 
@@ -282,42 +308,107 @@ tail -f /var/log/bcm-node-ops/agent.log
 
 ---
 
-## SQS Message Format
+## SQS Message Format (Standardized Envelope)
 
-Send this JSON to the SQS queue to trigger an operation:
+All messages use a common envelope. Only `payload` varies per use case.
 
-```json
-{
-  "request_id": "req-001",
-  "node": "dgx-b200-017",
-  "action": "reboot",
-  "mode": "graceful",
-  "reason": "firmware upgrade"
-}
-```
-
-| Field | Required | Values |
-|-------|:--------:|--------|
-| `request_id` | yes | Unique ID for tracking |
-| `node` | yes | Must exist in `nodes.yaml` |
-| `action` | yes | `reboot`, `power_on`, `power_off`, `power_cycle`, `status` |
-| `mode` | no | `graceful` (default), `force` |
-| `reason` | no | Free text, logged in audit |
-
-## SNS Result Format
-
-The agent publishes this to the SNS results topic after execution:
+### Request Message (`fleet-node-ops-requests`)
 
 ```json
 {
-  "request_id": "req-001",
-  "node": "dgx-b200-017",
-  "action": "reboot",
-  "status": "SUCCESS",
-  "message": "Redfish GracefulRestart accepted (HTTP 204)",
-  "timestamp": "2026-06-16T06:00:00Z"
+  "message_id": "uuid-v4",
+  "message_version": "1.0",
+  "timestamp": "2026-06-16T18:00:00Z",
+  "source": "fleet-api",
+  "correlation_id": "uuid-v4",
+  "idempotency_key": "uuid-v4",
+  "sequence_number": 10001,
+  "ttl_seconds": 300,
+  "payload": {
+    "request_id": "req-001",
+    "node": "dgx-b200-017",
+    "action": "reboot",
+    "mode": "graceful",
+    "reason": "firmware upgrade",
+    "operator": "platform-engineer",
+    "ticket": "ALTUS-20280"
+  }
 }
 ```
+
+### Response Message (`fleet-node-ops-responses`)
+
+```json
+{
+  "message_id": "uuid-v4",
+  "message_version": "1.0",
+  "timestamp": "2026-06-16T18:00:05Z",
+  "source": "bcm-node-ops-agent",
+  "correlation_id": "uuid-v4",
+  "idempotency_key": "uuid-v4",
+  "sequence_number": 20001,
+  "response": {
+    "request_id": "req-001",
+    "node": "dgx-b200-017",
+    "action": "reboot",
+    "status": "COMPLETED",
+    "phase": "completed",
+    "message": "Redfish GracefulRestart accepted (HTTP 204) [system=DGX, user=coupangdgx]",
+    "progress_pct": 100,
+    "vendor": "dgx",
+    "system_id": "DGX",
+    "bmc_http_code": 204
+  }
+}
+```
+
+**Progress phases:** `queued` → `validating` → `redfish_accepted` → `polling_status` → `completed` / `failed` / `expired` / `superseded`
+
+---
+
+## Go Agent Quick Start
+
+The Go binary uses **true SQS long-polling** (WaitTimeSeconds=20) — no sleep loops.
+
+### Build
+
+```bash
+make build
+# → ./bcm-node-ops-agent
+```
+
+### Configure
+
+```bash
+# Edit agent.env with your real SQS queue URLs and Redfish credentials
+vi config/agent.env
+```
+
+### Run (Manual)
+
+```bash
+source config/agent.env
+./bcm-node-ops-agent
+```
+
+### Run (systemd)
+
+```bash
+make install
+sudo systemctl enable --now bcm-node-ops-agent-go
+sudo journalctl -u bcm-node-ops-agent-go -f
+```
+
+### Key Differences from Shell Agent
+
+| Feature | Go Binary | Shell Script |
+|---------|-----------|-------------|
+| SQS model | True long-poll (WaitTimeSeconds=20) | Polling with sleep loop |
+| Startup | systemd Type=notify | Type=simple |
+| Shutdown | Graceful SIGTERM handling | Basic trap |
+| Logging | Structured JSON (slog) | Plain text |
+| Config | Environment variables (agent.env) | Sourced shell vars (agent.conf) |
+| Binary | Single static binary | Requires bash, curl, jq, aws-cli |
 
 ---
 

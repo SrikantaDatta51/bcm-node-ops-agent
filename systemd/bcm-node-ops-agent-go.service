@@ -1,0 +1,32 @@
+[Unit]
+Description=BCM Node Operations Agent (Go Binary)
+Documentation=https://github.com/SrikantaDatta51/bcm-node-ops-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/opt/bcm-node-ops/bin/bcm-node-ops-agent
+Restart=on-failure
+RestartSec=10
+WatchdogSec=120
+
+# Environment — SQS queues
+EnvironmentFile=/opt/bcm-node-ops/config/agent.env
+Environment=NODE_INVENTORY=/opt/bcm-node-ops/config/nodes.yaml
+Environment=AUDIT_LOG=/var/log/bcm-node-ops/audit.jsonl
+Environment=LOG_DIR=/var/log/bcm-node-ops
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/bcm-node-ops
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bcm-node-ops-agent-go
+
+[Install]
+WantedBy=multi-user.target
