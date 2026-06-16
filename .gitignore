@@ -1,0 +1,7 @@
+logs/
+.env
+*.pyc
+__pycache__/
+kestra-data/
+kestra-db-data/
+.pytest_cache/

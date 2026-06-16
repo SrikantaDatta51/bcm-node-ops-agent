@@ -1,0 +1,54 @@
+# BCM Node Ops Agent — Docker Compose
+# Phase 1: Kestra standalone (server + worker + UI) on BCM head node
+# Phase 2: Switch kestra service to worker-only mode connecting to AWS Kestra Server
+
+services:
+  kestra:
+    image: kestra/kestra:latest
+    container_name: bcm-node-ops-kestra
+    restart: unless-stopped
+    command: server standalone
+    ports:
+      - "8080:8080"    # Kestra UI
+      - "8081:8081"    # Kestra management
+    env_file: .env
+    environment:
+      KESTRA_CONFIGURATION: /app/config/application.yaml
+    volumes:
+      # Agent scripts and config
+      - ./scripts:/opt/bcm-node-ops/scripts:ro
+      - ./config:/opt/bcm-node-ops/config:ro
+      # Kestra config
+      - ./kestra/application.yaml:/app/config/application.yaml:ro
+      # Kestra flows (auto-loaded)
+      - ./kestra/flows:/app/flows:ro
+      # Audit logs (persisted on host)
+      - ./logs:/var/log/bcm-node-ops
+      # Kestra internal storage
+      - kestra-data:/app/storage
+    network_mode: host    # Needs access to BMC VLAN 300 + cmsh
+    depends_on:
+      kestra-db:
+        condition: service_healthy
+
+  kestra-db:
+    image: postgres:16-alpine
+    container_name: bcm-node-ops-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kestra
+      POSTGRES_USER: kestra
+      POSTGRES_PASSWORD: kestra
+    volumes:
+      - kestra-db-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kestra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  kestra-data:
+  kestra-db-data:

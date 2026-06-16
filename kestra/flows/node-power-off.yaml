@@ -1,0 +1,51 @@
+id: node-power-off
+namespace: bcm.node-ops
+description: |
+  Power off a GPU or CPU node via Redfish BMC.
+  Supports graceful (OS shutdown) and force (immediate off) modes.
+
+inputs:
+  - id: node_name
+    type: STRING
+    description: "Target node (e.g. dgx-b200-017)"
+    required: true
+  - id: mode
+    type: STRING
+    defaults: "graceful"
+    allowedValues: ["graceful", "force"]
+  - id: reason
+    type: STRING
+    defaults: "manual-power-off"
+  - id: dry_run
+    type: BOOLEAN
+    defaults: true
+
+tasks:
+  - id: log-start
+    type: io.kestra.plugin.core.log.Log
+    message: "[NODE-POWER-OFF] node={{ inputs.node_name }} mode={{ inputs.mode }} reason={{ inputs.reason }} dry_run={{ inputs.dry_run }}"
+
+  - id: dry-run-check
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.dry_run }}"
+    then:
+      - id: dry-run-log
+        type: io.kestra.plugin.core.log.Log
+        message: "[DRY RUN] Would power off {{ inputs.node_name }} with Redfish {{ inputs.mode == 'force' ? 'ForceOff' : 'GracefulShutdown' }}"
+    else:
+      - id: execute-power-off
+        type: io.kestra.plugin.scripts.shell.Commands
+        runner: PROCESS
+        env:
+          REDFISH_USER: "{{ secret('REDFISH_USER') }}"
+          REDFISH_PASSWORD: "{{ secret('REDFISH_PASSWORD') }}"
+          REDFISH_TLS_VERIFY: "{{ vars.redfish_tls_verify ?? 'false' }}"
+          NODE_INVENTORY_PATH: /opt/bcm-node-ops/config/nodes.yaml
+          AUDIT_LOG_DIR: /var/log/bcm-node-ops
+        commands:
+          - /opt/bcm-node-ops/scripts/redfish-power-off.sh "{{ inputs.node_name }}" "{{ inputs.mode }}" "{{ inputs.reason }}"
+
+errors:
+  - id: on-failure
+    type: io.kestra.plugin.core.log.Log
+    message: "[FAILED] Power off failed for {{ inputs.node_name }}: {{ error.message }}"

@@ -1,0 +1,46 @@
+id: node-power-on
+namespace: bcm.node-ops
+description: |
+  Power on a GPU or CPU node via Redfish BMC.
+
+inputs:
+  - id: node_name
+    type: STRING
+    description: "Target node (e.g. dgx-b200-017)"
+    required: true
+  - id: reason
+    type: STRING
+    defaults: "manual-power-on"
+  - id: dry_run
+    type: BOOLEAN
+    defaults: true
+
+tasks:
+  - id: log-start
+    type: io.kestra.plugin.core.log.Log
+    message: "[NODE-POWER-ON] node={{ inputs.node_name }} reason={{ inputs.reason }} dry_run={{ inputs.dry_run }}"
+
+  - id: dry-run-check
+    type: io.kestra.plugin.core.flow.If
+    condition: "{{ inputs.dry_run }}"
+    then:
+      - id: dry-run-log
+        type: io.kestra.plugin.core.log.Log
+        message: "[DRY RUN] Would power on {{ inputs.node_name }} with Redfish On"
+    else:
+      - id: execute-power-on
+        type: io.kestra.plugin.scripts.shell.Commands
+        runner: PROCESS
+        env:
+          REDFISH_USER: "{{ secret('REDFISH_USER') }}"
+          REDFISH_PASSWORD: "{{ secret('REDFISH_PASSWORD') }}"
+          REDFISH_TLS_VERIFY: "{{ vars.redfish_tls_verify ?? 'false' }}"
+          NODE_INVENTORY_PATH: /opt/bcm-node-ops/config/nodes.yaml
+          AUDIT_LOG_DIR: /var/log/bcm-node-ops
+        commands:
+          - /opt/bcm-node-ops/scripts/redfish-power-on.sh "{{ inputs.node_name }}" "{{ inputs.reason }}"
+
+errors:
+  - id: on-failure
+    type: io.kestra.plugin.core.log.Log
+    message: "[FAILED] Power on failed for {{ inputs.node_name }}: {{ error.message }}"
