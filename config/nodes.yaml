@@ -1,57 +1,35 @@
 # BCM Node Ops Agent — Node Inventory
-# Edit with your actual nodes and BMC IPs.
 #
-# Each node entry:
-#   type:            gpu | cpu
-#   bcm_name:        Name as known to BCM cmsh
-#   bmc_host:        Redfish BMC endpoint (https://<ip>)
-#   allowed_actions: List of permitted operations
-#   site:            Data center / availability zone
-#   cluster:         BCM cluster name
-#   rack:            Physical rack location
+# Edit with your actual nodes.
+# The agent only operates on nodes listed here.
+# ┌─────────────────────────────────────────────────────────┐
+# │  bmc_host: Redfish endpoint of the node's BMC           │
+# │  type:     gpu | cpu                                     │
+# │  allowed:  list of actions this node accepts             │
+# └─────────────────────────────────────────────────────────┘
 
 nodes:
   dgx-b200-017:
     type: gpu
-    bcm_name: dgx-b200-017
     bmc_host: https://10.10.20.17
-    allowed_actions: [status, reboot, power_on, power_off, power_cycle]
-    site: az2
-    cluster: az2-prod-bmaas-01
-    rack: R17
+    allowed: [status, reboot, power_on, power_off, power_cycle]
 
   dgx-b200-018:
     type: gpu
-    bcm_name: dgx-b200-018
     bmc_host: https://10.10.20.18
-    allowed_actions: [status, reboot, power_on, power_off, power_cycle]
-    site: az2
-    cluster: az2-prod-bmaas-01
-    rack: R17
+    allowed: [status, reboot, power_on, power_off, power_cycle]
 
   dgx-h200-042:
     type: gpu
-    bcm_name: dgx-h200-042
     bmc_host: https://10.10.10.42
-    allowed_actions: [status, reboot, power_on, power_off, power_cycle]
-    site: az1
-    cluster: az1-prod-k8s-01
-    rack: R42
+    allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-004:
     type: cpu
-    bcm_name: cpu-r660-004
     bmc_host: https://10.10.30.4
-    allowed_actions: [status, reboot, power_on, power_off, power_cycle]
-    site: az2
-    cluster: az2-prod-cpu-01
-    rack: R04
+    allowed: [status, reboot, power_on, power_off, power_cycle]
 
   cpu-r660-005:
     type: cpu
-    bcm_name: cpu-r660-005
     bmc_host: https://10.10.30.5
-    allowed_actions: [status, reboot]
-    site: az2
-    cluster: az2-prod-cpu-01
-    rack: R05
+    allowed: [status, reboot]
